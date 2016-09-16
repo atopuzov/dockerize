@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/context"
@@ -162,6 +164,36 @@ Arguments:
 	println(`For more information, see https://github.com/jwilder/dockerize`)
 }
 
+// ReapChildren cleans up zombies
+// - on SIGCHLD send wait4() (ref http://linux.die.net/man/2/waitpid)
+func reapChildren() {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGCHLD)
+	go func() {
+		// wait for signals on the channel until it closes
+		for _ = range sig {
+			for {
+				// only 1 SIGCHLD can be handled at a time from the channel,
+				// so we need to allow for the possibility that multiple child
+				// processes have terminated while one is already being reaped.
+				var wstatus syscall.WaitStatus
+				if _, err := syscall.Wait4(-1, &wstatus,
+					syscall.WNOHANG|syscall.WUNTRACED|syscall.WCONTINUED,
+					nil); err == syscall.EINTR {
+					continue
+
+				}
+				// return to the outer loop and wait for another signal
+				break
+
+			}
+
+		}
+
+	}()
+
+}
+
 func main() {
 
 	flag.BoolVar(&version, "version", false, "show version")
@@ -231,6 +263,10 @@ func main() {
 			template, dest = parts[0], parts[1]
 		}
 		generateFile(template, dest)
+	}
+
+	if 1 == os.Getpid() {
+		reapChildren()
 	}
 
 	waitForDependencies()
